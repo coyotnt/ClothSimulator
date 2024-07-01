@@ -3,6 +3,8 @@
 This is a GPU-based cloth simulator implemented by CUDA. The algorithm is based on [ARCSim](http://graphics.berkeley.edu/resources/ARCSim/).
 
 ### Changes
+- Fnet force output per node output
+    - NOTE: Allowing remeshing to generate more than 10k nodes can significantly slow down the performance
 - Changed exporting to include obstacles.
 - Introduced a new command line flag (--no-export-obstacles) to disable the export of obstacle data during simulations.
 - Improved the naming convention for saved frame files, making it more intuitive and easier to manage.
