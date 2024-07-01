@@ -2,7 +2,8 @@
 #include <fstream> // Include for file operations
      // Allocate memory on the host to store forces
     thrust::host_vector<float> resultantForcesHost;
-//    thrust::host_vector<Pairii> indicesForcesHost;
+  //  thrust::host_vector<Pairii> indicesForcesHost;
+    int numNodes = 0;
 
 Cloth::Cloth(const Json::Value& json, MemoryPool* pool) {
     Transformation transformation(json["transform"]);
@@ -849,6 +850,7 @@ void Cloth::physicsStep(float dt, const Vector3f& gravity, const Wind* wind, con
 
     updateNodes<<<GRID_SIZE, BLOCK_SIZE>>>(nNodes, dt, pointer(x), nodesPointer);
     CUDA_CHECK_LAST();
+    numNodes = nNodes;
 }
 
 void Cloth::remeshingStep(const std::vector<BVH*>& obstacleBvhs, float thickness, MemoryPool* pool) {
@@ -939,14 +941,9 @@ void Cloth::save(const std::string& path, Json::Value& json) const {
             std::ofstream forcesLogFile(forcesLogPath);
 
             if (forcesLogFile.is_open()) {
-                for (size_t i = 0; i < resultantForcesHost.size() - 3; ++i) {
-                    if(resultantForcesHost[i] != 0 && resultantForcesHost[i+1] != 0 && resultantForcesHost[i+2] != 0 && resultantForcesHost[i+3] != 0){
+                for (size_t i = 0; i < resultantForcesHost.size(); ++i) {
+                    if(i < numNodes*3){
                     forcesLogFile << resultantForcesHost[i] << std::endl;
-                    }
-                }
-                for (size_t i = resultantForcesHost.size() - 3; i < resultantForcesHost.size(); ++i) {
-                    if (resultantForcesHost[i] != 0) {
-                        forcesLogFile << resultantForcesHost[i] << std::endl;
                     }
                 }
                 forcesLogFile.close();
