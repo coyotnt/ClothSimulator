@@ -1,4 +1,8 @@
 #include "Cloth.cuh"
+#include <fstream> // Include for file operations
+     // Allocate memory on the host to store forces
+    thrust::host_vector<float> resultantForcesHost;
+//    thrust::host_vector<Pairii> indicesForcesHost;
 
 Cloth::Cloth(const Json::Value& json, MemoryPool* pool) {
     Transformation transformation(json["transform"]);
@@ -756,6 +760,7 @@ void Cloth::physicsStep(float dt, const Vector3f& gravity, const Wind* wind, con
     thrust::device_vector<float> outputBValues(bSize);
     auto jter = thrust::reduce_by_key(bIndices.begin(), bIndices.end(), bValues.begin(), outputBIndices.begin(), outputBValues.begin());
     int outputBSize = jter.first - outputBIndices.begin();
+
     thrust::device_vector<float> r(n);
     float* rPointer = pointer(r);
     setVector<<<GRID_SIZE, BLOCK_SIZE>>>(outputBSize, pointer(outputBIndices), pointer(outputBValues), rPointer);
@@ -777,6 +782,42 @@ void Cloth::physicsStep(float dt, const Vector3f& gravity, const Wind* wind, con
 
     multiplyByElement<<<GRID_SIZE, BLOCK_SIZE>>>(n, mPointer, rPointer, dPointer);
     CUDA_CHECK_LAST();
+
+    // Save the current copy of the sorted resultant force vectors to CPU RAM
+        resultantForcesHost.resize(outputBValues.size());
+
+        // Perform Asynchronous memory copy from device to host
+        cudaMemcpyAsync(
+            thrust::raw_pointer_cast(resultantForcesHost.data()), // Destination pointer (host)
+            thrust::raw_pointer_cast(outputBValues.data()), // Source pointer (device)
+            outputBValues.size() * sizeof(float), // Size of data to copy
+            cudaMemcpyDeviceToHost, // Direction of copy
+            cudaStreamDefault // CUDA stream (default or specific stream)
+        );
+
+        cudaStreamSynchronize(cudaStreamDefault);
+        CUDA_CHECK_LAST();
+    /*
+        indicesForcesHost.resize(outputBIndices.size());
+
+        cudaMemcpyAsync(
+            thrust::raw_pointer_cast(indicesForcesHost.data()), // Destination pointer (host)
+            thrust::raw_pointer_cast(outputBIndices.data()), // Source pointer (device)
+            outputBIndices.size() * sizeof(float), // Size of data to copy
+            cudaMemcpyDeviceToHost, // Direction of copy
+            cudaStreamDefault // CUDA stream (default or specific stream)
+        );
+
+        // Synchronize to ensure the copy operation completes before proceeding
+        cudaStreamSynchronize(cudaStreamDefault);
+        CUDA_CHECK_LAST();
+    */
+        // Print resultantForcesHost for debugging
+        /*std::cout << "resultantForcesHost contents:" << std::endl;
+        for (size_t i = 0; i < resultantForcesHost.size(); ++i) {
+            std::cout << resultantForcesHost[i] << " ";
+        }
+        std::cout << std::endl;*/
 
     CUBLAS_CHECK(cublasScopy(cublasHandle, n, dPointer, 1, zPointer, 1));
     for (int i = 0; i < MAX_SOLVER_ITERATION; i++) {
@@ -863,6 +904,81 @@ void Cloth::load(const std::string& path) {
 void Cloth::save(const std::string& path, Json::Value& json) const {
     json["mesh"] = path;
     json["transform"] = Json::nullValue;
+    
+    if (!gpu) {
+        int index = 0;
+        for (Json::Value& handleJson : json["handles"])
+            for (Json::Value& nodeJson : handleJson["nodes"])
+                nodeJson = handles[index++].node->index;
+    } else {
+        int nHandles = handlesGpu.size();
+        thrust::device_vector<int> handleIndices(nHandles);
+        collectHandleIndices<<<GRID_SIZE, BLOCK_SIZE>>>(nHandles, pointer(handlesGpu), pointer(handleIndices));
+        CUDA_CHECK_LAST();
+
+        // Print the handle indices for debugging
+        /*std::cout << "Handle Indices:" << std::endl;
+        for (int i = 0; i < nHandles; ++i) {
+            std::cout << handleIndices[i] << " ";
+        }
+        std::cout << std::endl;
+        */
+
+        int index = 0;
+        for (Json::Value& handleJson : json["handles"])
+            for (Json::Value& nodeJson : handleJson["nodes"]) {
+                int handleIndex = handleIndices[index++];
+                nodeJson = handleIndex;
+            }
+        
+        // Log the forces of all nodes to a txt file and follow the same naming convention
+        
+        std::string forcesLogPath = path.substr(0, path.find_last_of('.')) + "_forces.txt";
+
+        if (resultantForcesHost.size() > 0){
+            std::ofstream forcesLogFile(forcesLogPath);
+
+            if (forcesLogFile.is_open()) {
+                for (size_t i = 0; i < resultantForcesHost.size() - 3; ++i) {
+                    if(resultantForcesHost[i] != 0 && resultantForcesHost[i+1] != 0 && resultantForcesHost[i+2] != 0 && resultantForcesHost[i+3] != 0){
+                    forcesLogFile << resultantForcesHost[i] << std::endl;
+                    }
+                }
+                for (size_t i = resultantForcesHost.size() - 3; i < resultantForcesHost.size(); ++i) {
+                    if (resultantForcesHost[i] != 0) {
+                        forcesLogFile << resultantForcesHost[i] << std::endl;
+                    }
+                }
+                forcesLogFile.close();
+            } else {
+                std::cerr << "Failed to open forces log file: " << forcesLogPath << std::endl;
+            }
+            
+            /*
+            std::string indicesLogPath = path.substr(0, path.find_last_of('.')) + "_indices.txt";
+            std::ofstream indicesLogFile(indicesLogPath);
+
+            if (indicesLogFile.is_open()) {
+                for (size_t i = 0; i < indicesForcesHost.size(); ++i) {
+                    indicesLogFile << indicesForcesHost[i].first << " " << indicesForcesHost[i].second << std::endl;
+                }
+                indicesLogFile.close();
+            } else {
+                std::cerr << "Failed to open indices file: " << indicesLogPath << std::endl;
+            }
+            */
+        }
+    }
+
+    // Save mesh
+    mesh->save(path);
+}
+
+
+/* //Original Save Function
+void Cloth::save(const std::string& path, Json::Value& json) const {
+    json["mesh"] = path;
+    json["transform"] = Json::nullValue;
     if (!gpu) {
         int index = 0;
         for (Json::Value& handleJson : json["handles"])
@@ -882,4 +998,4 @@ void Cloth::save(const std::string& path, Json::Value& json) const {
             }
     }
     mesh->save(path);
-}
+}*/
